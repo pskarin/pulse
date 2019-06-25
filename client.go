@@ -14,6 +14,7 @@ import (
 	"unsafe"
 
 	"github.com/ghetzel/go-stockutil/stringutil"
+	"sync"
 )
 
 type ClientLockFunc func() error
@@ -35,6 +36,7 @@ const (
 // objects and data.
 //
 type Client struct {
+	mutex            sync.Mutex
 	ID               string
 	Name             string
 	Server           string
@@ -43,7 +45,7 @@ type Client struct {
 	mainloop         *C.pa_threaded_mainloop
 	context          *C.pa_context
 	api              *C.pa_mainloop_api
-	isLocked         bool
+	lockCount         int
 }
 
 func NewClient(name string) (*Client, error) {
@@ -52,6 +54,7 @@ func NewClient(name string) (*Client, error) {
 		Name:             name,
 		OperationTimeout: (time.Duration(DEFAULT_OPERATION_TIMEOUT_MSEC) * time.Millisecond),
 		state:            make(chan error),
+		lockCount:        0,
 	}
 
 	cgoregister(rv.ID, rv)
@@ -346,19 +349,23 @@ func (self *Client) GetLastError() error {
 // Acquire an exclusive lock on the mainloop
 //
 func (self *Client) Lock() {
-	if self.mainloop != nil && !self.isLocked {
-		self.isLocked = true
+	self.mutex.Lock()
+	if self.mainloop != nil && self.lockCount == 0 {
 		C.pa_threaded_mainloop_lock(self.mainloop)
 	}
+	self.lockCount += 1
+	self.mutex.Unlock()
 }
 
 // Release an exclusive lock on the mainloop
 //
 func (self *Client) Unlock() {
-	if self.mainloop != nil && self.isLocked {
+	self.mutex.Lock()
+	self.lockCount -= 1
+	if self.mainloop != nil && self.lockCount == 0 {
 		C.pa_threaded_mainloop_unlock(self.mainloop)
-		self.isLocked = false
 	}
+	self.mutex.Unlock()
 }
 
 // Wraps a given function call with a lock
